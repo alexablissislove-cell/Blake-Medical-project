@@ -1,0 +1,57 @@
+stages: [install, check, build]
+
+default:
+  image: node:22-alpine
+  interruptible: true
+
+variables:
+  npm_config_cache: .npm
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+.node:
+  rules:
+    - exists: [package.json]
+  cache:
+    key: { files: [package-lock.json] }
+    paths: [.npm, node_modules]
+    policy: pull
+
+smoke:
+  stage: check
+  script:
+    - echo "Pipeline OK on $CI_COMMIT_SHORT_SHA"
+
+install:
+  extends: .node
+  stage: install
+  cache:
+    key: { files: [package-lock.json] }
+    paths: [.npm, node_modules]
+    policy: pull-push
+  script: npm ci --prefer-offline --no-audit
+
+lint:
+  extends: .node
+  stage: check
+  needs: [install]
+  script: npm run lint --if-present
+
+test:
+  extends: .node
+  stage: check
+  needs: [install]
+  script: npm test --if-present
+
+build:
+  extends: .node
+  stage: build
+  needs: [install]
+  script: npm run build --if-present
+  artifacts:
+    paths: [dist/]
+    expire_in: 1 week
+    when: on_success
