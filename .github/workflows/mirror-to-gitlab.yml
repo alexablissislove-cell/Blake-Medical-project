@@ -1,0 +1,62 @@
+name: Mirror to GitLab
+
+on:
+  push:
+    branches:
+      - "**"
+    tags:
+      - "**"
+
+jobs:
+  mirror:
+    name: Push to GitLab
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require GITLAB_SSH_KEY secret
+        env:
+          GITLAB_SSH_KEY: ${{ secrets.GITLAB_SSH_KEY }}
+        run: |
+          if [ -z "$GITLAB_SSH_KEY" ]; then
+            echo "::error::Repository secret GITLAB_SSH_KEY is missing. Add the GitLab SSH private key as a repo secret named GITLAB_SSH_KEY, then re-run this workflow."
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Push branch or tag to GitLab
+        env:
+          GITLAB_SSH_KEY: ${{ secrets.GITLAB_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d "$HOME/.ssh"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          key = os.environ["GITLAB_SSH_KEY"].replace("\r\n", "\n").strip() + "\n"
+          path = Path.home() / ".ssh" / "id_ed25519"
+          path.write_text(key)
+          path.chmod(0o600)
+          PY
+          ssh-keyscan -t ed25519,rsa gitlab.com >> "$HOME/.ssh/known_hosts"
+          chmod 644 "$HOME/.ssh/known_hosts"
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/id_ed25519 -o IdentitiesOnly=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts -o StrictHostKeyChecking=yes"
+          git remote add gitlab git@gitlab.com:blake-medical-group/Blake-Medical-project.git 2>/dev/null || git remote set-url gitlab git@gitlab.com:blake-medical-group/Blake-Medical-project.git
+
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            SRC="refs/tags/${GITHUB_REF_NAME}"
+            DST="refs/tags/${GITHUB_REF_NAME}"
+          else
+            SRC="HEAD"
+            DST="refs/heads/${GITHUB_REF_NAME}"
+          fi
+
+          echo "Mirroring ${SRC} to gitlab:${DST}"
+          if git push gitlab "${SRC}:${DST}" --force-with-lease; then
+            echo "Pushed to GitLab with --force-with-lease"
+          else
+            echo "force-with-lease failed (histories may be unrelated on first sync). Retrying with --force because GitHub is the source of truth."
+            git push gitlab "${SRC}:${DST}" --force
+          fi
